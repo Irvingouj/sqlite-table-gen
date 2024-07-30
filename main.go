@@ -5,9 +5,10 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"strings"
 
-	strcase "github.com/iancoleman/strcase"
+	"github.com/iancoleman/strcase"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -86,10 +87,10 @@ func readDatabaseStructure(db *sql.DB) (DB, error) {
 
 func main() {
 	if len(os.Args) < 2 {
-		log.Fatal("Usage: go run main.go <sqlite-database-file> <output-file>")
+		log.Fatal("Usage: go run main.go <sqlite-database-file> <output-folder>")
 	}
 	databaseFile := os.Args[1]
-	outputFile := os.Args[2]
+	outputFolder := os.Args[2]
 
 	db, err := sql.Open("sqlite3", databaseFile)
 	if err != nil {
@@ -110,38 +111,8 @@ func main() {
 		}
 	}
 
-	// Write the database structure to a file as go code
-	f, err := os.Create(outputFile)
-
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	defer f.Close()
-
-	_, err = f.WriteString("package main\n\n")
-
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	_, err = f.WriteString("type Database struct {\n")
-	if err != nil {
-		log.Fatal(err)
-
-	}
-	for _, table := range database.Tables {
-		if strings.HasPrefix(table.Name, "_") {
-			continue
-		}
-		_, err = f.WriteString(fmt.Sprintf("\t%s %s\n", strcase.ToCamel(table.Name), strcase.ToCamel(table.Name)))
-		if err != nil {
-			log.Fatal(err)
-		}
-	}
-	_, err = f.WriteString("}\n\n")
-
-	if err != nil {
+	// Ensure output folder exists
+	if err := os.MkdirAll(outputFolder, os.ModePerm); err != nil {
 		log.Fatal(err)
 	}
 
@@ -149,63 +120,39 @@ func main() {
 		if strings.HasPrefix(table.Name, "_") {
 			continue
 		}
-		_, err = f.WriteString(fmt.Sprintf("type %s struct {\n", strcase.ToCamel(table.Name)))
-		if err != nil {
-			log.Fatal(err)
-		}
-		for _, column := range table.Columns {
-			_, err = f.WriteString(fmt.Sprintf("\t%s %s\n", strcase.ToCamel(column.Name), "string"))
-			if err != nil {
-				log.Fatal(err)
-			}
-		}
-		_, err = f.WriteString("}\n\n")
-		if err != nil {
-			log.Fatal(err)
-		}
+		generateCodeForTable(table, outputFolder)
+	}
+}
+
+func generateCodeForTable(table Table, outputFolder string) {
+	tableFolder := fmt.Sprintf("%s/%s", outputFolder, table.Name)
+	if err := os.MkdirAll(tableFolder, os.ModePerm); err != nil {
+		log.Fatal(err)
+		return
 	}
 
-	// fill up each table struct
-	filleUpStr := ""
-
-	for _, table := range database.Tables {
-		if strings.HasPrefix(table.Name, "_") {
-			continue
-		}
-
-		filleUpStr += fmt.Sprintf("%s := %s{\n", table.Name, strcase.ToCamel(table.Name))
-
-		for _, column := range table.Columns {
-			filleUpStr += fmt.Sprintf("\t%s: \"%s\",\n", strcase.ToCamel(column.Name), column.Name)
-		}
-
-		filleUpStr += "}\n\n"
-
-	}
-
-	fillUpTableStr := "db:= Database{\n"
-
-	for _, table := range database.Tables {
-		if strings.HasPrefix(table.Name, "_") {
-			continue
-		}
-
-		fillUpTableStr += fmt.Sprintf("\t%s: %s,\n", strcase.ToCamel(table.Name), table.Name)
-	}
-
-	fillUpTableStr += "}\n"
-
-	_, err = f.WriteString("func InitDataTypes() Database {\n")
-
+	filePath := fmt.Sprintf("%s/%s.go", tableFolder, table.Name)
+	file, err := os.Create(filePath)
 	if err != nil {
 		log.Fatal(err)
+		return
 	}
-	_, err = f.WriteString(filleUpStr)
-	_, err = f.WriteString(fillUpTableStr)
-	_, err = f.WriteString("return db\n")
-	_, err = f.WriteString("\n}")
+	defer file.Close()
 
-	if err != nil {
+	toWrite := fmt.Sprintf("package %s\n\n", table.Name)
+	toWrite += "var (\n"
+	toWrite += fmt.Sprintf("\tTableName = \"%s\"\n", table.Name)
+	for _, column := range table.Columns {
+		toWrite += fmt.Sprintf("\t%s = \"%s\"\n", strcase.ToCamel(column.Name), column.Name)
+	}
+	toWrite += ")\n"
+
+	if _, err := file.WriteString(toWrite); err != nil {
+		log.Fatal(err)
+	}
+
+	cmd := exec.Command("gofmt", "-w", filePath)
+	if err := cmd.Run(); err != nil {
 		log.Fatal(err)
 	}
 }
